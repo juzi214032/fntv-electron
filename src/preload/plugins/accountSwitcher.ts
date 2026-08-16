@@ -208,6 +208,9 @@ async function render(): Promise<void> {
     for (const p of data.profiles) {
         const btn = document.createElement('button');
         const active = isActive(data, p);
+        // 未选中的账号置灰，让当前账号更突出；悬停时恢复彩色提示可点击
+        const idleFilter = active ? 'none' : 'grayscale(0.85) brightness(0.72)';
+        const hoverFilter = active ? 'brightness(1.1)' : 'grayscale(0.15) brightness(1.05)';
         btn.style.cssText = `
             width: 22px; height: 22px; border-radius: 50%;
             background: ${p.color}; color: #fff; font-size: 12px; font-weight: 600;
@@ -215,13 +218,14 @@ async function render(): Promise<void> {
             cursor: pointer; border: none; padding: 0;
             border: ${active ? '2px solid rgba(255,255,255,0.95)' : '2px solid transparent'};
             box-shadow: ${active ? '0 0 0 1.5px rgba(0,0,0,0.35)' : 'none'};
+            filter: ${idleFilter};
             transition: transform 0.15s ease, filter 0.15s ease;
             font-family: -apple-system, "PingFang SC", sans-serif;
         `;
         btn.textContent = (p.displayName || p.account).trim().charAt(0).toUpperCase();
         btn.title = `${p.displayName}（${p.account}）${active ? ' · 当前' : ''}｜左键切换，右键编辑`;
-        btn.addEventListener('mouseenter', () => { btn.style.filter = 'brightness(1.2)'; btn.style.transform = 'scale(1.1)'; });
-        btn.addEventListener('mouseleave', () => { btn.style.filter = 'none'; btn.style.transform = 'scale(1)'; });
+        btn.addEventListener('mouseenter', () => { btn.style.filter = hoverFilter; btn.style.transform = 'scale(1.1)'; });
+        btn.addEventListener('mouseleave', () => { btn.style.filter = idleFilter; btn.style.transform = 'scale(1)'; });
         btn.addEventListener('click', () => {
             if (active) return;
             ipcRenderer.send('account-switcher-switch', { domain: p.domain, account: p.account });

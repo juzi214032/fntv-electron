@@ -49,11 +49,8 @@ function handleSaveProfile(event: IpcMainEvent, profile: ProfilePayload): void {
         return;
     }
 
-    // history 里的 domain 不带协议，档案统一存完整地址
-    let domain = profile.domain;
-    if (!/^https?:\/\//.test(domain)) {
-        domain = `https://${domain}`;
-    }
+    // 档案统一存裸域名（host[:port]），协议在切换时按登录历史解析
+    const domain = profile.domain.replace(/^https?:\/\//, '');
 
     // 保留已有的 token 缓存
     const existing = fnConfig.getAccountProfiles().find(
@@ -116,6 +113,18 @@ async function loginByPassword(server: string, account: string): Promise<string 
     return resp.data.token;
 }
 
+// 解析服务器完整地址：以登录历史的 useHttps 为准（局域网 fnOS 常为 http）
+function resolveServer(domain: string, account: string): string {
+    const host = fnConfig.normalizeDomain(domain);
+    const historyItem = (fnConfig.getHistory() || []).find(
+        h => fnConfig.normalizeDomain(h.domain) === host && h.account === account
+    );
+    if (historyItem) {
+        return `${historyItem.useHttps ? 'https' : 'http'}://${historyItem.domain}`;
+    }
+    return /^https?:\/\//.test(domain) ? domain : `https://${domain}`;
+}
+
 // 执行切换
 async function handleSwitchAccount(_event: IpcMainEvent, { domain, account }: { domain: string; account: string }): Promise<void> {
     log.info(`请求切换账号: ${account} @ ${domain}`);
@@ -127,7 +136,7 @@ async function handleSwitchAccount(_event: IpcMainEvent, { domain, account }: { 
         return;
     }
 
-    const server = /^https?:\/\//.test(domain) ? domain : `https://${domain}`;
+    const server = resolveServer(domain, account);
 
     // 播放中先停止，避免旧账号的播放回传污染进度
     stopCurrentPlayer();
