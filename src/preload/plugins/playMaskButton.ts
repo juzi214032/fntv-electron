@@ -162,18 +162,21 @@ function tryGetItemGuidFromOriginalLogic(button: HTMLElement): Promise<string | 
 // 从DOM获取id
 function getItemGuidFromDOM(button: HTMLElement): string | null {
     try {
+        // 链接类型按优先级排列：剧集(详情页)优先，其余为首页卡片(继续观看等)的链接类型
+        const linkPatterns = ['/v/tv/episode/', '/v/video/', '/v/movie/', '/v/tv/season/', '/v/other/'];
+
         // 从播放按钮向上查找包含 data-id="details" 的容器
         let container: Element | null = button;
         while (container && container !== document.body) {
             if (container.getAttribute('data-id') === 'details') {
-                // 在details容器中查找包含 /v/tv/episode/ 的A标签
-                const aLinks = container.querySelectorAll('a[href*="/v/tv/episode/"]');
-                if (aLinks.length > 0) {
-                    const link = aLinks[0] as HTMLAnchorElement;
-                    const guidMatch = link.href.match(/\/v\/tv\/episode\/([a-f0-9]{32})/i);
-                    if (guidMatch && guidMatch[1]) {
-                        logger.info('Found guid:', guidMatch[1]);
-                        return guidMatch[1];
+                for (const pattern of linkPatterns) {
+                    const link = container.querySelector(`a[href*="${pattern}"]`) as HTMLAnchorElement | null;
+                    if (link) {
+                        const guidMatch = link.href.match(/([a-f0-9]{32})/i);
+                        if (guidMatch && guidMatch[1]) {
+                            logger.info('Found guid:', guidMatch[1]);
+                            return guidMatch[1];
+                        }
                     }
                 }
                 break;
@@ -183,7 +186,7 @@ function getItemGuidFromDOM(button: HTMLElement): string | null {
 
         // 如果找不到，从当前URL获取
         const url = window.location.href;
-        const urlMatch = url.match(/\/v\/tv\/episode\/([a-f0-9]{32})/i);
+        const urlMatch = url.match(/\/v\/(?:tv\/episode|video|movie|tv\/season|other)\/([a-f0-9]{32})/i);
         if (urlMatch && urlMatch[1]) {
             logger.info('Found guid from URL:', urlMatch[1]);
             return urlMatch[1];

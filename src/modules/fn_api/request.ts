@@ -159,7 +159,8 @@ export async function request<T = any>(
             }
 
             // 不是json直接返回二进制文件
-            if (response.headers['content-type'] && !response.headers['content-type'].includes('application/json')) {
+            const contentType = String(response.headers['content-type'] || '');
+            if (contentType && !contentType.includes('application/json')) {
                 return {
                     success: true,
                     data: response.data as any, // 直接返回原始数据
