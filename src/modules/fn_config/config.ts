@@ -11,6 +11,17 @@ const IV = Buffer.alloc(16, 0); // Initialization vector
 app.setPath('userData', USER_DATA_PATH);
 
 /**
+ * 账号档案接口（快速切换用）
+ */
+export interface AccountProfile {
+    domain: string;      // 服务器地址（含协议）
+    account: string;     // 登录账号
+    displayName: string; // 显示名称
+    color: string;       // 按钮颜色
+    lastToken?: string;  // 上次登录 token 缓存，用于免密直切
+}
+
+/**
  * 配置接口
  */
 export interface Config {
@@ -19,6 +30,7 @@ export interface Config {
     token?: string;
     useHttps?: boolean;
     history?: HistoryItem[];
+    accountProfiles?: AccountProfile[];
     downloadProxyEnabled?: boolean;
     downloadProxy?: string;
     hideOriginalPlayButton?: boolean;
@@ -171,6 +183,55 @@ export function clearHistory(): void {
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
 }
 
+// 读取账号档案列表
+export function getAccountProfiles(): AccountProfile[] {
+    const config: Config = readConfig() || {};
+    return config.accountProfiles || [];
+}
+
+// 新增/更新账号档案（按 domain+account 定位；更新时保持原有顺序）
+export function upsertAccountProfile(profile: AccountProfile): void {
+    const config: Config = readConfig() || {};
+    config.accountProfiles = config.accountProfiles || [];
+    const idx = config.accountProfiles.findIndex(
+        item => normalizeDomain(item.domain) === normalizeDomain(profile.domain) && item.account === profile.account
+    );
+    if (idx >= 0) {
+        config.accountProfiles[idx] = profile;
+    } else {
+        config.accountProfiles.push(profile);
+    }
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+}
+
+// 删除账号档案
+export function removeAccountProfile(domain: string, account: string): void {
+    const config: Config = readConfig() || {};
+    if (!config.accountProfiles) return;
+    config.accountProfiles = config.accountProfiles.filter(
+        item => !(normalizeDomain(item.domain) === normalizeDomain(domain) && item.account === account)
+    );
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+}
+
+// 更新账号档案的 token 缓存
+export function updateAccountToken(domain: string, account: string, token: string): void {
+    const config: Config = readConfig() || {};
+    if (!config.accountProfiles) return;
+    const target = config.accountProfiles.find(
+        item => normalizeDomain(item.domain) === normalizeDomain(domain) && item.account === account
+    );
+    if (target) {
+        target.lastToken = token;
+        fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+    }
+}
+
+// 域名归一化（去协议、去尾部斜杠，用于比较）
+export function normalizeDomain(domain: string): string {
+    return (domain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase();
+}
+
 // 删除单个历史记录
 export function deleteHistoryItem({ domain, account }: DeleteHistoryParams): boolean {
     const config: Config = readConfig() || {};
@@ -306,6 +367,11 @@ module.exports = {
     getHistory,
     clearHistory,
     deleteHistoryItem,
+    getAccountProfiles,
+    upsertAccountProfile,
+    removeAccountProfile,
+    updateAccountToken,
+    normalizeDomain,
     getDownloadProxyUrl,
     setDownloadProxyUrl,
     getDownloadProxyConfig,

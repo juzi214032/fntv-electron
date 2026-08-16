@@ -388,6 +388,15 @@ function handleBeforeQuit(): void {
     cachedPlayerPath = null;
 }
 
+// 停止当前播放器（供账号切换等场景调用）
+function stopCurrentPlayer(): void {
+    if (currentPlayer && currentPlayer.isPlaying()) {
+        log.info('停止当前播放器');
+        currentPlayer.stop();
+        currentPlayer = null;
+    }
+}
+
 // 注册媒体播放处理器
 function init(): void {
     // 从配置中读取MPV播放器路径并设置
@@ -402,5 +411,6 @@ function init(): void {
 }
 
 export {
-    init
+    init,
+    stopCurrentPlayer
 };
