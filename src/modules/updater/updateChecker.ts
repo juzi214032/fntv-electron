@@ -56,7 +56,7 @@ export class UpdateChecker {
     private maxRetries: number;
     private baseRetryDelay: number;
 
-    constructor(owner: string = 'QiaoKes', repo: string = 'fntv-electron', currentVersion: string | null = null) {
+    constructor(owner: string = 'juzi214032', repo: string = 'fntv-electron', currentVersion: string | null = null) {
         this.owner = owner;
         this.repo = repo;
         // 如果传入了版本号就使用传入的，否则尝试从app获取，最后使用默认值
@@ -374,12 +374,12 @@ let instance: UpdateChecker | null = null;
 
 /**
  * 获取 UpdateChecker 单例实例
- * @param owner - GitHub 仓库所有者，默认 'QiaoKes'
+ * @param owner - GitHub 仓库所有者，默认 'juzi214032'
  * @param repo - GitHub 仓库名称，默认 'fntv-electron'
  * @param currentVersion - 当前版本号，默认从 app.getVersion() 获取
  * @returns UpdateChecker 实例
  */
-export function getInstance(owner: string = 'QiaoKes', repo: string = 'fntv-electron', currentVersion: string | null = null): UpdateChecker {
+export function getInstance(owner: string = 'juzi214032', repo: string = 'fntv-electron', currentVersion: string | null = null): UpdateChecker {
     if (!instance) {
         instance = new UpdateChecker(owner, repo, currentVersion);
     }
