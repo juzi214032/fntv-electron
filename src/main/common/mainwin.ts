@@ -1,6 +1,8 @@
 import { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
 import * as path from 'path';
 
+const isMac = process.platform === 'darwin';
+
 const mainwinConfig: BrowserWindowConstructorOptions = {
     width: 1400,
     height: 800,
@@ -9,14 +11,22 @@ const mainwinConfig: BrowserWindowConstructorOptions = {
     autoHideMenuBar: true,
     show: false,
     icon: path.join(__dirname, '../../../build/icon.ico'),
-    frame: false,
+    // macOS 使用系统交通灯按钮，但让现有页面继续延伸到标题栏区域。
+    // Windows/Linux 保持原有的无边框窗口和自定义窗口按钮。
+    frame: isMac,
+    ...(isMac && {
+        titleBarStyle: 'hiddenInset' as const,
+        trafficLightPosition: { x: 14, y: 14 },
+    }),
     // transparent: true,
     webPreferences: {
         webgl: true,
         partition: 'persist:fntv',
         preload: path.join(__dirname, '../../preload/index.js'),
-        nodeIntegration: true,   // 开启 Node.js 支持
-        contextIsolation: false,  // 如果 preload 里要直接改 DOM，通常要关掉
+        nodeIntegration: false,
+        contextIsolation: true,
+        // preload 仍需加载项目内模块；后续完成单文件打包后可再启用 sandbox。
+        sandbox: false,
         spellcheck: false,  // 禁用拼写检查，避免输入法干扰
     }
 };

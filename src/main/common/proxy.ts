@@ -9,11 +9,33 @@ import { createTray, showTrayNotification, destroyTray } from './tray';
 import { getMacCloseAction, setMacCloseAction, getTrayNotificationShown, setTrayNotificationShown } from './preferences';
 import * as log from '../../modules/logger';
 import { getDaemonInstance, ProxyDaemon } from './proxyDaemon';
+import { PROXY_PORT, probeProxyHealth, waitForProxyHealth } from './proxyHealth';
+import { loadOrCreateProxySecret } from './proxySecret';
 
 
 // 全局守护程序实例
 let proxyDaemon: ProxyDaemon | null = null;
 let restartScheduled = false;
+let startPromise: Promise<ChildProcess | null> | null = null;
+const PROXY_RESTART_DELAY_MS = 3000;
+const MAX_PROXY_RESTART_ATTEMPTS = 5;
+let proxySecret: string | null = null;
+
+export function getProxySecret(): string {
+    if (!proxySecret) {
+        proxySecret = loadOrCreateProxySecret(app.getPath('userData'));
+    }
+    return proxySecret;
+}
+
+function getProxyEnvironment(): NodeJS.ProcessEnv {
+    return { ...process.env, LANG: 'C.UTF-8' };
+}
+
+function sendProxySecret(proxyProcess: ChildProcess, secret: string): void {
+    if (!proxyProcess.stdin) throw new Error('Proxy 标准输入不可用，无法安全传递认证密钥');
+    proxyProcess.stdin.end(secret + '\n');
+}
 
 // 获取应用中的proxy可执行文件路径
 function getProxyExecPath(): string {
@@ -42,8 +64,18 @@ function getProxyExecPath(): string {
 }
 
 // 启动proxy模块的函数
-export async function startProxyProcess(): Promise<ChildProcess> {
+export function startProxyProcess(): Promise<ChildProcess | null> {
+    if (!startPromise) {
+        startPromise = startProxyProcessOnce().finally(() => {
+            startPromise = null;
+        });
+    }
+    return startPromise;
+}
+
+async function startProxyProcessOnce(): Promise<ChildProcess | null> {
     const proxyPath = getProxyExecPath();
+    const proxySecret = getProxySecret();
 
     // 检查可执行文件是否存在
     if (!fs.existsSync(proxyPath)) {
@@ -55,64 +87,55 @@ export async function startProxyProcess(): Promise<ChildProcess> {
     }
 
     try {
+        // 上次异常退出可能留下仍可用的 Proxy。只复用通过协议健康检查的实例，
+        // 不把任意占用 22345 端口的进程误认为本应用服务。
+        if (await probeProxyHealth(proxySecret)) {
+            log.warn(`检测到已运行的 fntv Proxy，复用端口 ${PROXY_PORT}`);
+            return null;
+        }
+
         // 启动proxy进程
         const proxyProcess = spawn(proxyPath, [], {
             stdio: ['pipe', 'pipe', 'pipe'],
             detached: false,
-            env: { ...process.env, LANG: 'C.UTF-8' } // 设置UTF-8编码环境
+            env: getProxyEnvironment()
         });
 
         log.info('正在启动proxy进程...');
 
-        // 等待proxy进程启动成功
-        await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                const errorMsg = 'Proxy进程启动超时';
-                const detailMsg = `等待时间: 10秒\n可执行文件: ${proxyPath}\n\n可能的原因:\n• Proxy程序启动缓慢\n• 端口2345被占用\n• 系统资源不足\n\n建议检查:\n1. 确认端口2345未被其他程序占用\n2. 查看系统资源使用情况\n3. 重新编译proxy模块`;
-                log.error(errorMsg);
-                reject(new Error(errorMsg + '\n' + detailMsg));
-            }, 10000); // 10秒超时
-
-            proxyProcess.on('error', (error) => {
-                clearTimeout(timeout);
-                const errorMsg = `Proxy进程启动失败`;
-                const detailMsg = `错误详情: ${error.message}\n可执行文件: ${proxyPath}\n\n可能的原因:\n• 文件损坏或权限不足\n• 缺少必要的动态库\n• 系统兼容性问题\n\n建议检查:\n1. 确认文件完整性\n2. 检查文件执行权限\n3. 查看系统日志`;
-                log.error(errorMsg + ': ' + error.message);
-                reject(new Error(errorMsg + '\n' + detailMsg));
+        const startupError = new Promise<never>((_, reject) => {
+            proxyProcess.once('error', error => reject(new Error(`Proxy进程启动失败: ${error.message}`)));
+            proxyProcess.once('exit', (code, signal) => {
+                reject(new Error(`Proxy进程在健康检查完成前退出 (code=${code}, signal=${signal})`));
             });
 
-            // 监听stdout来确认进程已启动
             proxyProcess.stdout?.on('data', (data) => {
-                const output = data.toString('utf8');
-                log.noformat(output);
-                // 检查启动成功的标志
-                if (output.includes('启动') || output.includes('listening') || output.includes('server') || output.includes('运行')) {
-                    clearTimeout(timeout);
-                    resolve();
-                }
+                log.noformat(data.toString('utf8'));
             });
-
             proxyProcess.stderr?.on('data', (data) => {
-                const output = data.toString('utf8');
-                log.error('Proxy stderr:', output);
+                log.error('Proxy stderr:', data.toString('utf8'));
             });
-
-            // 如果进程在短时间内没有错误，认为启动成功
-            setTimeout(() => {
-                if (proxyProcess && !proxyProcess.killed) {
-                    clearTimeout(timeout);
-                    resolve();
-                }
-            }, 2000);
         });
+        sendProxySecret(proxyProcess, proxySecret);
+
+        const healthy = await Promise.race([
+            waitForProxyHealth(proxySecret, 10000),
+            startupError,
+        ]);
+        if (!healthy) {
+            proxyProcess.kill();
+            throw new Error(
+                `Proxy健康检查超时。请确认端口 ${PROXY_PORT} 未被其他程序占用，并检查安全软件是否拦截 ${proxyPath}`
+            );
+        }
 
         log.info('Proxy模块启动成功');
 
         // 初始化或更新守护程序
         if (!proxyDaemon) {
             proxyDaemon = getDaemonInstance({
-                restartDelay: 3000,
-                maxRestartAttempts: 5,
+                restartDelay: PROXY_RESTART_DELAY_MS,
+                maxRestartAttempts: MAX_PROXY_RESTART_ATTEMPTS,
                 restartAttemptResetTime: 60000,
                 enableHeartbeat: true,
                 heartbeatInterval: 5000,
@@ -124,21 +147,35 @@ export async function startProxyProcess(): Promise<ChildProcess> {
             if (restartScheduled) return;
             restartScheduled = true;
 
-            // 延迟重启，避免频繁重启
-            setTimeout(async () => {
-                try {
-                    log.info(`尝试重启Proxy进程 (第 ${attempts} 次)...`);
-                    const newProxyProcess = await startProxyProcessInternal();
-                    if (proxyDaemon) {
-                        proxyDaemon.updateProcess(newProxyProcess);
+            try {
+                for (let attempt = attempts; attempt <= MAX_PROXY_RESTART_ATTEMPTS; attempt++) {
+                    if (proxyDaemon?.isShutdownInProgress()) return;
+
+                    await new Promise(resolve => setTimeout(resolve, PROXY_RESTART_DELAY_MS));
+                    try {
+                        log.info(`尝试重启Proxy进程 (第 ${attempt} 次)...`);
+                        const newProxyProcess = await startProxyProcessInternal();
+                        proxyDaemon?.updateProcess(newProxyProcess);
+                        return;
+                    } catch (error) {
+                        const errorObj = error instanceof Error ? error : new Error(String(error));
+                        log.error(`Proxy进程重启失败 (第 ${attempt} 次):`, errorObj.message);
                     }
-                    restartScheduled = false;
-                } catch (error) {
-                    const errorObj = error instanceof Error ? error : new Error(String(error));
-                    log.error('Proxy进程重启失败:', errorObj.message);
-                    restartScheduled = false;
                 }
-            }, 3000);
+
+                try {
+                    await dialog.showMessageBox({
+                        type: 'error',
+                        title: '应用即将退出',
+                        message: '飞牛影视的核心服务（Proxy）多次启动失败，无法继续运行。',
+                        buttons: ['退出应用'],
+                    });
+                } finally {
+                    app.quit();
+                }
+            } finally {
+                restartScheduled = false;
+            }
         };
 
         // 启用守护程序监控
@@ -161,48 +198,40 @@ export async function startProxyProcess(): Promise<ChildProcess> {
  */
 async function startProxyProcessInternal(): Promise<ChildProcess> {
     const proxyPath = getProxyExecPath();
+    const proxySecret = getProxySecret();
 
     // 启动proxy进程
     const proxyProcess = spawn(proxyPath, [], {
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: false,
-        env: { ...process.env, LANG: 'C.UTF-8' }
+        env: getProxyEnvironment()
     });
 
     log.info('正在启动proxy进程（重启）...');
 
-    // 等待proxy进程启动成功
-    await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            reject(new Error('Proxy进程重启启动超时'));
-        }, 10000);
-
-        proxyProcess.on('error', (error) => {
-            clearTimeout(timeout);
-            reject(error);
+    const startupError = new Promise<never>((_, reject) => {
+        proxyProcess.once('error', reject);
+        proxyProcess.once('exit', (code, signal) => {
+            reject(new Error(`Proxy进程重启时提前退出 (code=${code}, signal=${signal})`));
         });
 
         proxyProcess.stdout?.on('data', (data) => {
-            const output = data.toString('utf8');
-            log.noformat(output);
-            if (output.includes('启动') || output.includes('listening') || output.includes('server') || output.includes('运行')) {
-                clearTimeout(timeout);
-                resolve();
-            }
+            log.noformat(data.toString('utf8'));
         });
-
         proxyProcess.stderr?.on('data', (data) => {
-            const output = data.toString('utf8');
-            log.error('Proxy stderr:', output);
+            log.error('Proxy stderr:', data.toString('utf8'));
         });
-
-        setTimeout(() => {
-            if (proxyProcess && !proxyProcess.killed) {
-                clearTimeout(timeout);
-                resolve();
-            }
-        }, 2000);
     });
+    sendProxySecret(proxyProcess, proxySecret);
+
+    const healthy = await Promise.race([
+        waitForProxyHealth(proxySecret, 10000),
+        startupError,
+    ]);
+    if (!healthy) {
+        proxyProcess.kill();
+        throw new Error(`Proxy重启后健康检查超时，端口: ${PROXY_PORT}`);
+    }
 
     return proxyProcess;
 }

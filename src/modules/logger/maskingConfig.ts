@@ -3,8 +3,6 @@
  * 定义需要脱敏的数据模式和脱敏规则
  */
 
-import { getLogLevel, LogLevel } from './config';
-
 /**
  * 脱敏类型
  */
@@ -50,6 +48,7 @@ export const maskingPatterns: Record<string, MaskingPatternConfig> = {
             /authorization['":\s]*['"]*([^'",\s}]+)['"]*?/gi,
             /access_token['":\s]*['"]*([^'",\s}]+)['"]*?/gi,
             /refresh_token['":\s]*['"]*([^'",\s}]+)['"]*?/gi,
+            /session[='":\s]*['"]*([a-f0-9]{32,})['"]*?/gi,
         ],
         maskType: 'partial', // 部分遮蔽
         showStart: 4, // 显示前4位
@@ -131,7 +130,7 @@ export const maskingPatterns: Record<string, MaskingPatternConfig> = {
     // URL中的敏感参数
     urlParams: {
         patterns: [
-            /([?&](?:token|key|secret|password|pwd)=)([^&\s]+)/gi,
+            /[?&](?:token|session|key|secret|password|pwd)=([^&\s]+)/gi,
         ],
         maskType: 'partial',
         showStart: 4,
@@ -149,17 +148,16 @@ export const maskingChars: MaskingCharsConfig = {
 };
 
 /**
- * 是否启用脱敏功能
- * 开发模式下不启用脱敏，便于调试
- * 通过日志级别来判断：DEBUG级别表示开发环境，不启用脱敏
+ * 是否启用脱敏功能。
+ * 调试日志同样可能写入持久化文件，不能因日志级别而暴露凭据。
  */
-export const maskingEnabled: boolean = getLogLevel() !== LogLevel.DEBUG;
+export const maskingEnabled: boolean = true;
 
 /**
  * 敏感关键词列表（用于检测可能包含敏感信息的对象）
  */
 export const sensitiveKeywords: string[] = [
-    'password', 'pwd', 'passwd', 'token', 'secret', 'key', 'auth',
+    'password', 'pwd', 'passwd', 'token', 'session', 'secret', 'key', 'auth',
     'phone', 'mobile', 'email', 'id_card', 'idcard', 'bank_card',
     'address', 'location',
     'domain', 'host', 'url', 'hostname', 'endpoint', 'server'

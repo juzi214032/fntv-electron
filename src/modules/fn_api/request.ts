@@ -4,6 +4,7 @@ import { setTimeout } from 'timers/promises';
 import https from 'https';
 import log from '../logger';
 import { isTrusted, showCertificateTrustDialog, isCertificateError, addTrustedHost } from '../cert_trust';
+import { composeCookieHeader, getAccessCookieHeader } from './accessGrant';
 
 // 全局配置
 const api_key = 'NDzZTVxnRKP8Z0jXg1VAMonaG8akvh';
@@ -76,7 +77,8 @@ export async function request<T = any>(
     timeout: number = DEFAULT_TIMEOUT,
     tryTimes: number = 5,
 ): Promise<ApiResponse<T>> {
-    const fullUrl = baseUrl + url;
+    const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+    const fullUrl = normalizedBaseUrl + url;
     if (method === HttpMethod.POST || method === HttpMethod.PUT) {
         data = data || {};
         data["nonce"] = generateRandomDigits(); // POST/PUT请求添加随机数防重放
@@ -87,13 +89,13 @@ export async function request<T = any>(
     const headers = {
         "Content-Type": "application/json",
         "Authorization": token,
-        "Cookie": "mode=relay",
         "Authx": authx,
-        ...extraHeaders
+        ...extraHeaders,
+        "Cookie": composeCookieHeader(getAccessCookieHeader(normalizedBaseUrl), extraHeaders?.Cookie),
     };
 
     // 根据URL是否已被信任来决定是否验证证书
-    const shouldIgnoreCert = isTrusted(baseUrl);
+    const shouldIgnoreCert = isTrusted(normalizedBaseUrl);
 
     const config = {
         headers,
@@ -129,7 +131,7 @@ export async function request<T = any>(
 
                 if (location) {
                     // 1. 解析新地址
-                    let newBaseUrl = baseUrl;
+                    let newBaseUrl = normalizedBaseUrl;
                     let newUrlPath = location;
 
                     // 如果是绝对路径 (http开头)，重新拆解 baseUrl 和 path
@@ -158,9 +160,9 @@ export async function request<T = any>(
                 }
             }
 
-            // 不是json直接返回二进制文件
-            const contentType = String(response.headers['content-type'] || '');
-            if (contentType && !contentType.includes('application/json')) {
+            // Axios 允许 header 值为多种类型；HTTP Content-Type 只按字符串处理。
+            const contentType = response.headers['content-type'];
+            if (typeof contentType === 'string' && !contentType.includes('application/json')) {
                 return {
                     success: true,
                     data: response.data as any, // 直接返回原始数据
@@ -178,7 +180,7 @@ export async function request<T = any>(
                     };
                 }
 
-                log.warn(`fn_api 请求时签名错误，重试中 attempt = ${attempt + 1}, url: ${fullUrl}`);
+                log.warn(`fn_api 请求时签名错误，重试中 attempt = ${attempt + 1}, path: ${url}`);
                 await setTimeout(100); // 等待100ms
                 continue; // 继续下一次循环
             }
@@ -199,13 +201,13 @@ export async function request<T = any>(
             const errorCode = error.code || 'UNKNOWN';
             // 优先获取 error.message，因为 connection error 没有 response
             const errorMsg = error.message;
-            const respData = error.response ? JSON.stringify(error.response.data) : 'No Response Data';
+            const responseStatus = error.response?.status ?? '无响应';
 
-            log.error(`请求异常: [${errorCode}] ${errorMsg} | Resp: ${respData} | URL: ${fullUrl}`);
+            log.error(`请求异常: [${errorCode}] ${errorMsg} | HTTP: ${responseStatus} | path: ${url}`);
 
             // 检查是否为证书验证错误且URL未被信任
-            if (isCertificateError(error) && !isTrusted(baseUrl)) {
-                log.warn(`检测到证书验证错误: code: ${errorCode}, msg: ${errorMsg}, URL: ${fullUrl}`);
+            if (isCertificateError(error) && !isTrusted(normalizedBaseUrl)) {
+                log.warn(`检测到证书验证错误: code: ${errorCode}, msg: ${errorMsg}, path: ${url}`);
 
                 // 返回特殊的证书错误响应，让上层处理
                 return {

@@ -1,5 +1,6 @@
 import { IpcMainEvent } from 'electron';
 import * as fnConfig from '../../../modules/fn_config/config';
+import { isMpvPlaybackEnabled } from '../../../modules/fn_config/playbackPreference';
 import { registerHandler } from '../core/ipcHandler';
 
 /**
@@ -38,14 +39,15 @@ function handleSetDownloadProxy(event: IpcMainEvent, { enabled, proxyUrl }: Part
 
 // 获取播放按钮配置
 function handleGetPlayButtonConfig(event: IpcMainEvent): void {
-    const hideOriginalPlayButton = fnConfig.getHideOriginalPlayButton();
-    event.reply('play-button-config-info', { hideOriginalPlayButton });
+    event.reply('play-button-config-info', {
+        hideOriginalPlayButton: fnConfig.getHideOriginalPlayButton(),
+    });
 }
 
 // 设置播放按钮配置
-function handleSetPlayButtonConfig(event: IpcMainEvent, { hideOriginalPlayButton }: Partial<PlayButtonConfig>): void {
+function handleSetPlayButtonConfig(event: IpcMainEvent, config?: Partial<PlayButtonConfig>): void {
     try {
-        fnConfig.setHideOriginalPlayButton(hideOriginalPlayButton !== false); // 默认为true
+        fnConfig.setHideOriginalPlayButton(isMpvPlaybackEnabled(config?.hideOriginalPlayButton));
         event.reply('play-button-config-set', { success: true });
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';

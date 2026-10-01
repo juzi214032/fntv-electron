@@ -15,7 +15,6 @@ import {
 import { PlayerFactory } from '../factory';
 import log from '../../logger';
 import NodeMpv, { TimePosition } from 'node-mpv-2';
-import { title } from 'process';
 
 export class MpvPlayer extends BasePlayer {
     private mpvInstance: NodeMpv | null = null;
@@ -105,7 +104,7 @@ export class MpvPlayer extends BasePlayer {
 
             if (this.config.debug) {
                 log.debug(`生成播放列表文件: ${this.playlistFilePath}`);
-                log.debug(`播放列表内容:\n${playlistContent}`);
+                log.debug(`播放列表已生成，共 ${infos.length} 项`);
             }
 
             // 加载播放列表文件
@@ -234,6 +233,10 @@ export class MpvPlayer extends BasePlayer {
             if (status.property === 'playlist-pos' && typeof status.value === 'number') {
                 // 更新当前播放项状态
                 this.updateCurrentItemStatus(status.value);
+            }
+
+            if (status.property === 'volume' && typeof status.value === 'number') {
+                this.config.onVolumeChange(status.value);
             }
 
             // 监听播放路径位置

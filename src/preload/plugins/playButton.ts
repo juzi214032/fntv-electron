@@ -1,193 +1,44 @@
-// preload/plugins/playButton.ts
-import { ipcRenderer } from 'electron';
-import { registerHook } from '../core/hooks';
-import { HookType } from '../core/hooks';
 import logger from '../core/logger';
-import { getCookie } from '../core/utils';
-import type { PlayMovieData } from '../core/types';
+import { registerHook, HookType } from '../core/hooks';
+import {
+    findItemGuid,
+    getPlayButtonConfig,
+    isSemanticPlayButton,
+} from '../core/playback';
 
-// 获取配置的辅助函数
-async function getPlayButtonConfig(): Promise<{ hideOriginalPlayButton: boolean }> {
-    return new Promise((resolve) => {
-        // 发送请求获取配置
-        ipcRenderer.send('get-play-button-config');
+function findDetailPlayButton(): HTMLElement | null {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"]'));
+    for (const candidate of candidates) {
+        if (!isSemanticPlayButton(candidate)) continue;
 
-        // 监听回复
-        const handler = (event: any, data: any) => {
-            ipcRenderer.off('play-button-config-info', handler);
-            resolve(data || { hideOriginalPlayButton: true }); // 默认隐藏
-        };
-
-        ipcRenderer.once('play-button-config-info', handler);
-
-        // 2秒后超时，使用默认值
-        setTimeout(() => {
-            ipcRenderer.off('play-button-config-info', handler);
-            resolve({ hideOriginalPlayButton: true });
-        }, 2000);
-    });
-}
-
-// 发送播放信息到主进程
-function sendPlayEventToMain(button: HTMLElement | null = null): string | null {
-    const url = window.location.href;
-    const id = url.split('/').pop();
-
-    if (!id) {
-        logger.error('Failed to extract ID from DOM or URL');
-        return null;
+        const className = typeof candidate.className === 'string' ? candidate.className.toLowerCase() : '';
+        if (className.includes('play-mask') || className.includes('playmask')) continue;
+        if (findItemGuid(candidate)) return candidate.closest<HTMLElement>('button, [role="button"]');
     }
-
-    const token = getCookie('Trim-MC-token');
-
-    // 获取当前UI上选中的是第几个播放源
-    const sourceIndex = getCurrentSelectedVersionIndex();
-
-    if (id && token) {
-        // 将动态获取的 sourceIndex 传给主进程
-        const playData: PlayMovieData = { id, token, sourceIndex };
-        ipcRenderer.send('play-movie', playData);
-        return id;
-    } else {
-        logger.error('Failed to extract ID or token. ID:', id, 'Token:', token);
-        return null;
-    }
-}
-
-/**
- * 获取当前高亮的版本按钮 Index
- * 原理：在点击播放的瞬间，扫描版本列表，找到那个样式为 primary 的按钮
- */
-function getCurrentSelectedVersionIndex(): number {
-    try {
-        const buttons = Array.from(document.querySelectorAll('button.semi-button.\\!h-9.\\!px-6'));
-        
-        if (buttons.length === 0) {
-            logger.warn('No version buttons found via selector.');
-            return 0;
-        }
-
-        const selectedIndex = buttons.findIndex(btn => 
-            btn.classList.contains('semi-button-primary')
-        );
-
-        const result = selectedIndex === -1 ? 0 : selectedIndex;
-        logger.info(`Found ${buttons.length} buttons, selected index: ${result}`);
-        
-        return result;
-
-    } catch (e) {
-        logger.error('Error calculating version index:', e);
-        // 出错时降级处理，默认播放第0个
-        return 0;
-    }
-}
-
-// 基于共同DOM特征搜索播放按钮
-function findReferenceButton(context: Document | Element = document): HTMLButtonElement | null {
-    // 主要特征：特定播放图标路径
-    const PLAY_ICON_PATH = "M5.984 18.819V5.18c0-1.739 1.939-2.776 3.386-1.812l10.228 6.82a2.177 2.177 0 010 3.623L9.37 20.63c-1.447.964-3.386-.073-3.386-1.812z";
-
-    // 查找包含特定播放图标的按钮
-    const buttonsWithPlayIcon = context.querySelectorAll('button');
-    for (let i = 0; i < buttonsWithPlayIcon.length; i++) {
-        const button = buttonsWithPlayIcon[i];
-        // 检测特定播放图标
-        const icon = button.querySelector('svg > path[d^="M5.984"]') as SVGPathElement;
-        if (icon && icon.getAttribute('d')?.startsWith(PLAY_ICON_PATH.substring(0, 10))) {
-            return button as HTMLButtonElement;
-        }
-
-        // 备用检测：按钮类名组合
-        const classes = button.getAttribute('class') || '';
-        if (classes.includes('semi-button') &&
-            classes.includes('semi-button-primary') &&
-            classes.includes('!min-w-[150px]')) {
-            return button as HTMLButtonElement;
-        }
-    }
-
     return null;
 }
 
-function clonePlayBtnAndInject(callback: (button: HTMLElement) => void, btnText: string): void {
-    const referenceButton = findReferenceButton();
-    if (!referenceButton || referenceButton.hasAttribute('data-mpv-btn')) return;
-
-    logger.info('Detected inject page, injecting play button...');
-
-    // 标记原始按钮
-    referenceButton.setAttribute('data-mpv-btn', 'processed');
-
-    // 克隆并修改按钮
-    const newButton = referenceButton.cloneNode(true) as HTMLButtonElement;
-    newButton.removeAttribute('data-mpv-btn');
-
-    // 更新按钮文本（保留图标）
-    const textSpans = newButton.querySelector('span > span > span') as HTMLSpanElement;
-    if (textSpans) textSpans.textContent = btnText;
-
-    // 添加唯一标识
-    newButton.setAttribute('data-custom-play', 'true');
-
-    // 添加点击事件，传入原始按钮作为参数
-    newButton.addEventListener('click', () => callback(referenceButton));
-
-    // 插入到参考按钮旁边
-    const parentNode = referenceButton.parentNode;
-    if (parentNode) {
-        parentNode.insertBefore(newButton, referenceButton.nextSibling);
-    }
+function interceptOriginalButton(button: HTMLElement): void {
+    if (button.dataset.mpvDetailIntercepted === 'true') return;
+    button.dataset.mpvDetailIntercepted = 'true';
 }
 
-// 拦截原有播放按钮，直接用MPV播放
-function interceptOriginalButton(): void {
-    const referenceButton = findReferenceButton();
-    if (!referenceButton || referenceButton.hasAttribute('data-mpv-intercepted')) return;
+async function setupDetailPlayButton(): Promise<void> {
+    const button = findDetailPlayButton();
+    if (!button) return;
 
-    logger.info('Detected page, intercepting original play button...');
-
-    // 标记已拦截
-    referenceButton.setAttribute('data-mpv-intercepted', 'true');
-
-    // 添加点击事件拦截器
-    const clickHandler = (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-
-        logger.info('Original play button intercepted, playing with MPV');
-        sendPlayEventToMain(referenceButton);
-
-        return false;
-    };
-
-    // 在捕获阶段添加事件监听器，确保优先拦截
-    referenceButton.addEventListener('click', clickHandler, true);
-}
-
-async function injectCustomPlayBtn(): Promise<void> {
-    // 获取配置
     const config = await getPlayButtonConfig();
-
-    if (config.hideOriginalPlayButton) {
-        // 如果隐藏原有播放按钮，直接拦截原按钮
-        interceptOriginalButton();
-    } else {
-        // 否则添加额外的MPV播放按钮
-        clonePlayBtnAndInject((button) => sendPlayEventToMain(button), 'MPV播放');
-    }
+    if (!config.hideOriginalPlayButton) return;
+    interceptOriginalButton(button);
 }
 
-// 包装函数来处理异步调用
-function handlePlayButtonInjection(): void {
-    injectCustomPlayBtn().catch(error => {
-        logger.error('Error in injectCustomPlayBtn:', error);
+function handleSetup(): void {
+    setupDetailPlayButton().catch((error: unknown) => {
+        logger.error('设置 MPV 播放按钮失败:', error);
     });
 }
 
-// 注册hook
-registerHook(HookType.OnReady, handlePlayButtonInjection);
-registerHook(HookType.OnDomChange, handlePlayButtonInjection);
+registerHook(HookType.OnReady, handleSetup);
+registerHook(HookType.OnDomChange, handleSetup);
 
-export { };
+export {};

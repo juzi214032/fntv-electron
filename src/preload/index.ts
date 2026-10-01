@@ -1,20 +1,78 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { contextBridge, ipcRenderer, shell } from 'electron';
 
 import { HookType, runHooks } from './core/hooks';
 
 // 导入渲染进程日志模块
 import preloadLogger from './core/logger';
 
-// 由于 contextIsolation: false，直接在全局对象上暴露日志接口
-(global as any).log = preloadLogger;
-(global as any).logger = preloadLogger;
+const SEND_CHANNELS = new Set([
+    'login', 'delete-history-item', 'clear-history', 'get-config',
+    'get-version', 'check-update', 'get-download-proxy', 'get-play-button-config',
+    'set-download-proxy', 'set-play-button-config',
+]);
+const RECEIVE_CHANNELS = new Set([
+    'config-data', 'history-item-deleted', 'login-error', 'login-success',
+    'version-info', 'update-status', 'download-proxy-info', 'play-button-config-info',
+    'download-proxy-set', 'play-button-config-set',
+]);
+type PageListener = (...args: unknown[]) => void;
+const listenerWrappers = new Map<string, Map<PageListener, (...args: unknown[]) => void>>();
 
-// 如果在浏览器环境中，也暴露到window对象
-if (typeof window !== 'undefined') {
-    window.log = preloadLogger;
-    window.logger = preloadLogger;
+function assertAllowed(channels: Set<string>, channel: string): void {
+    if (!channels.has(channel)) throw new Error(`IPC channel not allowed: ${channel}`);
 }
+
+function wrapListener(channel: string, listener: PageListener): (...args: unknown[]) => void {
+    const wrapped = (_event: unknown, ...args: unknown[]) => listener(undefined, ...args);
+    let channelListeners = listenerWrappers.get(channel);
+    if (!channelListeners) {
+        channelListeners = new Map();
+        listenerWrappers.set(channel, channelListeners);
+    }
+    channelListeners.set(listener, wrapped);
+    return wrapped;
+}
+
+function exposeLoginPageApi(): void {
+    if (window.location.protocol !== 'file:') return;
+
+    const api = {
+        send(channel: string, ...args: unknown[]) {
+            assertAllowed(SEND_CHANNELS, channel);
+            ipcRenderer.send(channel, ...args);
+        },
+        on(channel: string, listener: PageListener) {
+            assertAllowed(RECEIVE_CHANNELS, channel);
+            ipcRenderer.on(channel, wrapListener(channel, listener));
+        },
+        once(channel: string, listener: PageListener) {
+            assertAllowed(RECEIVE_CHANNELS, channel);
+            ipcRenderer.once(channel, wrapListener(channel, listener));
+        },
+        off(channel: string, listener: PageListener) {
+            assertAllowed(RECEIVE_CHANNELS, channel);
+            const wrapped = listenerWrappers.get(channel)?.get(listener);
+            if (!wrapped) return;
+            ipcRenderer.off(channel, wrapped);
+            listenerWrappers.get(channel)?.delete(listener);
+        },
+        async openExternal(url: string) {
+            const target = new URL(url);
+            if (target.protocol !== 'https:' || target.hostname !== 'github.com') {
+                throw new Error('仅允许打开 GitHub HTTPS 链接');
+            }
+            await shell.openExternal(target.toString());
+        },
+    };
+
+    contextBridge.exposeInMainWorld('electronAPI', api);
+    contextBridge.exposeInMainWorld('log', preloadLogger);
+    contextBridge.exposeInMainWorld('logger', preloadLogger);
+}
+
+exposeLoginPageApi();
 
 // 自动加载插件
 const pluginsDir = path.join(__dirname, 'plugins');
@@ -25,12 +83,6 @@ fs.readdirSync(pluginsDir).forEach((file: string) => {
 });
 
 function initInjector(): void {
-    // 由于 contextIsolation: false，在DOM ready时暴露到window对象
-    if (typeof window !== 'undefined') {
-        window.log = preloadLogger;
-        window.logger = preloadLogger;
-    }
-    
     if (document.readyState !== 'loading') {
         runHooks(HookType.OnReady);
     } else {

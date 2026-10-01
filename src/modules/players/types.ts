@@ -52,6 +52,7 @@ export type Config = {
     playerPath?: string;
     fnapi: fn.ApiService;
     onEvent: EventHandler;
+    onVolumeChange?: (volume: number) => void;
 }
 
 // 播放器类型枚举
@@ -78,6 +79,7 @@ export abstract class BasePlayer {
             extraArgs: config.extraArgs || [],
             playerPath: config.playerPath || '',
             onEvent: config.onEvent,
+            onVolumeChange: config.onVolumeChange || (() => undefined),
             fnapi: config.fnapi
         };
     }

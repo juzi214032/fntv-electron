@@ -2,10 +2,12 @@ import { dialog, BrowserWindow, app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import log from '../logger';
+import { normalizeCertificateHost } from './host';
 
 // 内存缓存 - 存储已信任的域名/URL
 let trustedHostsCache: Set<string> | null = null;
 let cacheLoaded = false;
+const sessionTrustedHosts = new Set<string>();
 
 /**
  * 获取证书信任配置文件路径
@@ -71,23 +73,7 @@ function getTrustedHostsCache(): Set<string> {
  * @param url - 完整URL或主机:端口格式
  * @returns 标准化的主机名:端口
  */
-function normalizeHost(url: string): string {
-    try {
-        // 如果不是完整URL，添加protocol
-        if (!url.startsWith('http://') && !url.startsWith('https://')) {
-            url = `https://${url}`;
-        }
-
-        const urlObj = new URL(url);
-        const host = urlObj.hostname;
-        const port = urlObj.port || (urlObj.protocol === 'https:' ? '443' : '80');
-
-        return `${host}:${port}`;
-    } catch (error) {
-        log.error('解析URL失败:', error);
-        return url;
-    }
-}
+const normalizeHost = normalizeCertificateHost;
 
 /**
  * 检查主机是否已被信任
@@ -97,7 +83,7 @@ function normalizeHost(url: string): string {
 export function isTrusted(url: string): boolean {
     const host = normalizeHost(url);
     const trustedHosts = getTrustedHostsCache();
-    return trustedHosts.has(host);
+    return sessionTrustedHosts.has(host) || trustedHosts.has(host);
 }
 
 /**
@@ -261,6 +247,7 @@ export async function showCertificateTrustDialog(
                 buttons: ['信任证书', '取消'],
                 defaultId: 1, // 默认选择"取消"
                 cancelId: 1,
+                checkboxLabel: '记住此证书',
                 checkboxChecked: false
             })
             : await dialog.showMessageBox({
@@ -271,11 +258,13 @@ export async function showCertificateTrustDialog(
                 buttons: ['信任证书', '取消'],
                 defaultId: 1, // 默认选择"取消"
                 cancelId: 1,
+                checkboxLabel: '记住此证书',
                 checkboxChecked: false
             });
 
         if (result.response === 0) {
             // 用户选择信任
+            sessionTrustedHosts.add(host);
             if (result.checkboxChecked) {
                 // 记住选择，添加到信任列表
                 addTrustedHost(url);

@@ -13,12 +13,15 @@ export interface Logger {
 
 export interface PlayMovieData {
     id: string;
-    token: string;
     sourceIndex: number; // 播放源
 }
 
-export interface Utils {
-    getCookie: (name: string) => string | null;
+export interface LoginPageApi {
+    send: (channel: string, ...args: unknown[]) => void;
+    on: (channel: string, listener: (...args: any[]) => void) => void;
+    once: (channel: string, listener: (...args: any[]) => void) => void;
+    off: (channel: string, listener: (...args: any[]) => void) => void;
+    openExternal: (url: string) => Promise<void>;
 }
 
 // 扩展全局 Window 接口
@@ -26,6 +29,7 @@ declare global {
     interface Window {
         log: Logger;
         logger: Logger;
+        electronAPI: LoginPageApi;
     }
     
     // Node.js 全局变量

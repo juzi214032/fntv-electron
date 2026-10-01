@@ -10,6 +10,7 @@ import log from '../logger';
 import * as types from './types';
 import { isTrusted } from '../cert_trust';
 import NodeCache from 'node-cache';
+import { createApiCacheKey } from './cacheKey';
 
 export class ApiService {
     private baseURL: string;
@@ -23,7 +24,7 @@ export class ApiService {
      * @param token - 授权令牌
      */
     constructor(baseURL: string, token: string = '') {
-        this.baseURL = baseURL;
+        this.baseURL = baseURL.replace(/\/+$/, '');
         this.tempDir = path.join(app.getPath('temp'), 'fntv_subtitles');
         this.token = token;
 
@@ -61,11 +62,10 @@ export class ApiService {
             if (options.forceRefresh) {
                 return fn(...args);
             }
-            // 缓存key包含baseURL，确保不同实例的缓存不会冲突
-            const key = `${this.baseURL}_${originalName}_${JSON.stringify(args)}`;
+            const key = createApiCacheKey(this.baseURL, this.token, originalName, args);
             const cached = ApiService.cache.get(key);
             if (cached !== undefined) {
-                log.debug(`缓存命中: ${key}`);
+                log.debug(`缓存命中: ${originalName}`);
                 return Promise.resolve(cached);
             }
 
@@ -74,14 +74,14 @@ export class ApiService {
             const existingPromise = ApiService.cache.get(cachePromiseKey) as Promise<any> | undefined;
 
             if (existingPromise) {
-                log.info(`使用现有请求: ${key}`);
+                log.debug(`复用进行中的请求: ${originalName}`);
                 return existingPromise;
             }
 
             const promise = fn(...args).then(result => {
                 ApiService.cache.set(key, result, options.ttl);
                 ApiService.cache.del(cachePromiseKey); // 清理promise缓存
-                log.info(`缓存设置: ${key}, TTL: ${options.ttl}s`);
+                log.debug(`缓存设置: ${originalName}, TTL: ${options.ttl}s`);
                 return result;
             }).catch(error => {
                 ApiService.cache.del(cachePromiseKey); // 清理promise缓存

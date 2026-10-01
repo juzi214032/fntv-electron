@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, IpcMainEvent } from 'electron';
+import { app, BrowserWindow, dialog, IpcMainEvent } from 'electron';
 import * as ply from '../../../modules/players';
 import * as fn from '../../../modules/fn_api/api';
 import * as fnConfig from '../../../modules/fn_config/config';
@@ -8,10 +8,14 @@ import * as log from '../../../modules/logger';
 import * as os from 'os';
 import * as fs from 'fs';
 import { PlayStatusData, ItemListRequest } from '../../../modules/fn_api/types';
-import { escape } from 'querystring';
 import { isTrusted } from '../../../modules/cert_trust';
 import { checkLibraryPageUrl } from '../../common/utils';
 import { getMainWindow } from '../../common/mainwin';
+import { getMpvConfigDir } from './mpvConfig';
+import { resolveBundledMpvPath } from '../../common/mpvConfigHelpers';
+import { getProxySecret } from '../../common/proxy';
+import { createProxyPlaybackUrl, registerPlaybackSession } from '../../common/proxySession';
+import { getAccessCookieHeader } from '../../../modules/fn_api/accessGrant';
 
 /**
 * 媒体播放插件
@@ -19,12 +23,12 @@ import { getMainWindow } from '../../common/mainwin';
 */
 interface PlayRequest {
     id: string;
-    token: string;
     sourceIndex: number; // 可选，播放源
 }
 
 // 全局播放器实例引用
 let currentPlayer: ply.BasePlayer | null = null;
+let playbackStarting = false;
 
 // MPV播放器路径缓存
 let cachedPlayerPath: string | null = null;
@@ -47,8 +51,11 @@ function getMpvPlayerPath(): string | undefined {
     const platform = os.platform();
 
     if (platform === 'win32') {
-        // Windows 平台使用本地文件路径
-        cachedPlayerPath = 'third_party\\fntv-mpv\\mpv.exe';
+        cachedPlayerPath = resolveBundledMpvPath({
+            appPath: app.getAppPath(),
+            execPath: process.execPath,
+            isPackaged: app.isPackaged,
+        });
         return cachedPlayerPath;
     } else if (platform === 'darwin') {
         // macOS 常用安装路径
@@ -207,9 +214,7 @@ function eventHandler(fnapi: fn.ApiService) {
                     log.debug('记录播放状态end');
                 }
 
-                // 等待50ms
-                await new Promise(resolve => setTimeout(resolve, 50));
-                await refreshWindow();
+                // 正常退出只回传最终进度；整页刷新会造成主窗口白闪。
                 break;
 
             default:
@@ -220,21 +225,30 @@ function eventHandler(fnapi: fn.ApiService) {
 }
 
 // 处理播放事件
-async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: PlayRequest): Promise<void> {
-    // 检查是否已有播放器在播放
-    if (currentPlayer && currentPlayer.isPlaying()) {
-        log.warn('已有播放器在播放，无法重复播放');
+async function handlePlayMovie(_event: IpcMainEvent, request: PlayRequest): Promise<void> {
+    if (playbackStarting || currentPlayer?.isPlaying()) {
+        log.warn('播放器正在启动或播放，忽略重复播放请求');
         return;
     }
 
-    log.info('Play movie event received id:', id, ' with token:', token, ' index:', sourceIndex);
+    playbackStarting = true;
+    try {
+        await startPlayback(request);
+    } finally {
+        playbackStarting = false;
+    }
+}
+
+async function startPlayback({ id, sourceIndex }: PlayRequest): Promise<void> {
+    log.info('Play movie event received id:', id, ' index:', sourceIndex);
 
     const config = fnConfig.readConfig();
-    if (!config || !config.domain) {
-        throw new Error('无法找到服务器地址配置');
+    if (!config?.domain || !config.token || !config.account) {
+        throw new Error('无法找到有效的服务器登录配置');
     }
 
-    const fnapi = new fn.ApiService(config.domain, token);
+    // 播放凭据只取自主进程安全配置，不信任远程页面传入的 token。
+    const fnapi = new fn.ApiService(config.domain, config.token);
 
     const response = await fnapi.getPlayInfo(id);
     if (!response.success || !response.data) {
@@ -242,7 +256,11 @@ async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: 
         return;
     }
 
-    log.info('获取播放信息成功:', response.data);
+    log.info('获取播放信息成功:', {
+        guid: response.data.guid,
+        type: response.data.type,
+        parent_guid: response.data.parent_guid || '',
+    });
 
     const type = response.data.type;
     const parentGuid = response.data.parent_guid;
@@ -258,9 +276,9 @@ async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: 
         }
 
         for (const episode of episodeList.data) {
-            const mediaItem = processEpisodeMedia(config, episode);
+            const mediaItem = processEpisodeMedia(episode);
             playList.push(mediaItem);
-            log.info('添加剧集到播放列表:', mediaItem);
+            log.info('添加剧集到播放列表:', mediaItem.itemGuid);
         }
     } 
     else if (type === 'Video' && parentGuid) {
@@ -273,22 +291,22 @@ async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: 
         };
 
         const mediaList = await fnapi.getItemList(req);
-        log.info('获取媒体列表响应:', mediaList);
         if (!mediaList.success || !mediaList.data || !mediaList.data.list) {
             log.error('获取媒体列表失败:', mediaList ? mediaList.message : '未知错误');
             return;
         }
+        log.info(`获取媒体列表成功，共 ${mediaList.data.list.length} 项`);
 
         for (const media of mediaList.data.list) {
-            const mediaItem = processEpisodeMedia(config, media);
+            const mediaItem = processEpisodeMedia(media);
             playList.push(mediaItem);
-            log.info('添加剧集到播放列表:', mediaItem);
+            log.info('添加媒体到播放列表:', mediaItem.itemGuid);
         }
     }
     else {
-        const mediaItem = processSingleMedia(config, response.data);
+        const mediaItem = processSingleMedia(response.data);
         playList.push(mediaItem);
-        log.info('添加单集到播放列表:', mediaItem);
+        log.info('添加单集到播放列表:', mediaItem.itemGuid);
     }
 
     if (playList.length === 0) {
@@ -298,12 +316,34 @@ async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: 
 
     // 寻找当前播放的媒体在数组中的位置
     const currentIndex = playList.findIndex(item => item.itemGuid === itemGuid);
+    if (currentIndex < 0) {
+        throw new Error('当前播放项不在生成的播放列表中');
+    }
+
+    const session = await registerPlaybackSession(getProxySecret(), {
+        token: config.token,
+        account: config.account,
+        domain: config.domain,
+        accessCookie: getAccessCookieHeader(config.domain),
+        skipVerify: isTrusted(config.domain),
+        useNasLocal: config.nasProxyEnabled === true,
+        itemGuids: playList.map(item => item.itemGuid),
+    });
+    playList = playList.map(item => ({
+        ...item,
+        playLink: createProxyPlaybackUrl(session, item.itemGuid),
+    }));
 
     // 检查是否选择了特定的播放源索引
-    if (sourceIndex > 0) {
-        log.info(`使用指定的播放源索引: ${sourceIndex}`);
+    const selectedSourceIndex = Number.isInteger(sourceIndex) && sourceIndex > 0 ? sourceIndex : 0;
+    if (selectedSourceIndex > 0) {
+        log.info(`使用指定的播放源索引: ${selectedSourceIndex}`);
         // 修改播放列表中的源索引
-        playList[currentIndex].playLink = getProxyUrl(config, playList[currentIndex].itemGuid, sourceIndex);
+        playList[currentIndex].playLink = createProxyPlaybackUrl(
+            session,
+            playList[currentIndex].itemGuid,
+            selectedSourceIndex,
+        );
     }
 
     // 获取MPV播放器路径
@@ -313,19 +353,27 @@ async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: 
         return;
     }
 
+    const mpvArgs = [
+        '--force-window=immediate',
+        '--border=no',
+        '--network-timeout=180',
+        `--volume=${fnConfig.getMpvVolume()}`,
+    ];
+    if (os.platform() === 'win32' && !fnConfig.getMpvPlayerPath()) {
+        // bundled mpv.exe 自带 portable_config；显式指向用户目录，避免状态写入安装目录。
+        mpvArgs.push(`--config-dir=${getMpvConfigDir()}`);
+    }
+
     let playConfig: ply.Config = {
         fnapi: fnapi,
         playerPath: playerPath,
         // headers: {
         //     Authorization: token,
         // },
-        extraArgs: [
-            '--force-window=immediate',
-            '--network-timeout=180',
-            // "--user-agent=Lavf/59.27.100",
-        ],
+        extraArgs: mpvArgs,
         debug: true,
-        onEvent: eventHandler(fnapi)
+        onEvent: eventHandler(fnapi),
+        onVolumeChange: fnConfig.setMpvVolume,
     };
 
     // 创建播放器实例
@@ -335,21 +383,15 @@ async function handlePlayMovie(event: IpcMainEvent, { id, token, sourceIndex }: 
     currentPlayer = player;
 
     // 开始播放
-    player.playList(playList, currentIndex);
-}
-
-// 生成代理URL
-function getProxyUrl(cfg: fnConfig.Config, itemGuid: string, sourceIndex: number = 0): string {
-    const skipVerify = isTrusted(cfg.domain || '') ? '1' : '0';
-    const useNasLocal = cfg.nasProxyEnabled === true ? '1' : '0';
-    // urlencode
-    const domain = escape(cfg.domain || '');
-    // const skipVerify = '1'; // 永远跳过证书验证
-    return `http://127.0.0.1:22345/api/v1/playvideo/${itemGuid}?token=${cfg.token}&skipVerify=${skipVerify}&account=${cfg.account}&domain=${domain}&useNasLocal=${useNasLocal}&sourceIndex=${sourceIndex}`;
+    const started = await player.playList(playList, currentIndex);
+    if (!started && currentPlayer === player) {
+        currentPlayer = null;
+        return;
+    }
 }
 
 // 处理当前播放的媒体信息
-function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem): ply.PlayItem {
+function processEpisodeMedia(info: fn.PlayListItem): ply.PlayItem {
     return {
         itemGuid: info.guid,
         title: info.title,
@@ -358,12 +400,12 @@ function processEpisodeMedia(cfg: fnConfig.Config, info: fn.PlayListItem): ply.P
         episodeNumber: info.episode_number,
         ts: info.ts,
         duration: info.duration,
-        playLink: getProxyUrl(cfg, info.guid),
+        playLink: '',
     };
 }
 
 // 处理单个待播放媒体信息
-function processSingleMedia(cfg: fnConfig.Config, info: fn.PlayInfo): ply.PlayItem {
+function processSingleMedia(info: fn.PlayInfo): ply.PlayItem {
     return {
         itemGuid: info.guid,
         title: info.item.title,
@@ -372,7 +414,7 @@ function processSingleMedia(cfg: fnConfig.Config, info: fn.PlayInfo): ply.PlayIt
         episodeNumber: info.item.episode_number,
         ts: info.ts,
         duration: info.item.duration,
-        playLink: getProxyUrl(cfg, info.guid),
+        playLink: '',
     };
 }
 

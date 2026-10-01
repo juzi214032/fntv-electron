@@ -3,6 +3,7 @@
 
 <head>
     <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- 修改 favicon 为 base64 图标 -->
     <link rel="icon" href="./image/logo.png" type="image/png" />
@@ -20,6 +21,8 @@
             justify-content: center;
             align-items: center;
             min-height: 100vh;
+            padding: 12px;
+            box-sizing: border-box;
             color: #fff;
         }
 
@@ -28,7 +31,11 @@
             background: rgba(37, 43, 55, 0.5);
             /* 半透明背景 */
             border-radius: 12px;
-            padding: 30px;
+            padding: 24px 30px;
+            max-height: calc(100vh - 24px);
+            overflow-y: auto;
+            scrollbar-gutter: stable;
+            box-sizing: border-box;
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
 
             backdrop-filter: blur(12px);
@@ -41,7 +48,7 @@
 
         .logo {
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             position: relative;
         }
 
@@ -93,13 +100,13 @@
         }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 14px;
             position: relative;
         }
 
         label {
             display: block;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             font-weight: 500;
         }
 
@@ -126,7 +133,7 @@
         .switch-container {
             display: flex;
             align-items: center;
-            margin-bottom: 24px;
+            margin-bottom: 18px;
         }
 
         .switch-label {
@@ -913,6 +920,11 @@
             <input type="password" id="password" placeholder="请输入密码" spellcheck="false" tabindex="3" />
             <button type="button" class="password-toggle" id="passwordToggle" title="显示/隐藏密码"><img id="passwordToggleImg" width="20px" src="./image/password-show.png" alt="显示密码" /></button>
         </div>
+        <div class="form-group has-button">
+            <label for="accessCode">访问码（可选）</label>
+            <input type="password" id="accessCode" placeholder="服务器未启用访问码时请留空" spellcheck="false" autocomplete="off" tabindex="4" />
+            <button type="button" class="password-toggle" id="accessCodeToggle" title="显示访问码"><img id="accessCodeToggleImg" width="20px" src="./image/password-show.png" alt="显示访问码" /></button>
+        </div>
         <div class="switch-container">
             <label class="switch">
                 <input type="checkbox" id="httpsSwitch" />
@@ -955,7 +967,7 @@
                 <input type="text" id="proxyUrlInput" placeholder="https://ghfast.top" />
             </div>
             <div class="proxy-switch-row">
-                <span>隐藏原有播放按钮</span>
+                <span>使用 MPV 播放</span>
                 <label class="proxy-switch">
                     <input type="checkbox" id="hideOriginalPlayButtonSwitch" checked>
                     <span class="proxy-slider"></span>
@@ -990,7 +1002,7 @@
     </div>
 
     <script>
-        const { ipcRenderer } = require('electron'); // 渲染进程可用
+        const ipcRenderer = window.electronAPI;
         
         // 简化的日志接口 - 完全透明使用
         // 不再需要手动发送IPC，直接使用即可
@@ -1002,6 +1014,9 @@
         const passwordInput = document.getElementById('password');
         const passwordToggle = document.getElementById('passwordToggle');
         const passwordToggleImg = document.getElementById('passwordToggleImg');
+        const accessCodeInput = document.getElementById('accessCode');
+        const accessCodeToggle = document.getElementById('accessCodeToggle');
+        const accessCodeToggleImg = document.getElementById('accessCodeToggleImg');
         const historyBtn = document.getElementById('historyBtn');
         const historyDropdown = document.getElementById('historyDropdown');
         const customConfirm = document.getElementById('customConfirm');
@@ -1213,14 +1228,16 @@
             const domain = domainInput.value.trim();
             const username = usernameInput.value.trim();
             const password = passwordInput.value.trim();
+            const accessCode = accessCodeInput.value.trim();
             const useHttps = document.getElementById('httpsSwitch').checked;
 
-            window.log.info('登录信息:', { domain, username, password, useHttps });
+            window.log.info('提交登录请求:', { useHttps });
             
             const loginData = {
                 domain: domain,
                 username: username,
                 password: password,
+                accessCode: accessCode,
                 useHttps: useHttps
             };
 
@@ -1275,6 +1292,20 @@
             }
         });
 
+        accessCodeToggle.addEventListener('click', function () {
+            if (accessCodeInput.type === 'password') {
+                accessCodeInput.type = 'text';
+                accessCodeToggleImg.src = './image/password-hide.png';
+                accessCodeToggle.title = '隐藏访问码';
+                accessCodeToggleImg.alt = '隐藏访问码';
+            } else {
+                accessCodeInput.type = 'password';
+                accessCodeToggleImg.src = './image/password-show.png';
+                accessCodeToggle.title = '显示访问码';
+                accessCodeToggleImg.alt = '显示访问码';
+            }
+        });
+
         // 历史记录按钮点击
         historyBtn.addEventListener('click', function (e) {
             e.stopPropagation();
@@ -1295,32 +1326,49 @@
                 return;
             }
 
-            const historyHtml = historyData.map((item, index) => `
-                <div class="history-item" data-domain="${item.domain}" data-account="${item.account}" data-password="${item.password}" data-use-https="${item.useHttps || false}" data-index="${index}">
-                    <div class="history-content">
-                        <div class="history-account">${item.account}</div>
-                        <div class="history-domain">${item.domain}${item.useHttps ? ' (HTTPS)' : ' (HTTP)'}</div>
-                    </div>
-                    <button class="history-delete" data-index="${index}" title="删除此记录">×</button>
-                </div>
-            `).join('');
+            historyDropdown.replaceChildren();
+            historyData.forEach((item, index) => {
+                const row = document.createElement('div');
+                row.className = 'history-item';
+                row.dataset.index = String(index);
 
-            const clearButton = historyData.length > 0 ? '<div class="clear-history" id="clearHistoryBtn">清除所有历史记录</div>' : '';
-            historyDropdown.innerHTML = historyHtml + clearButton;
+                const content = document.createElement('div');
+                content.className = 'history-content';
+                const account = document.createElement('div');
+                account.className = 'history-account';
+                account.textContent = item.account;
+                const domain = document.createElement('div');
+                domain.className = 'history-domain';
+                domain.textContent = `${item.domain}${item.useHttps ? ' (HTTPS)' : ' (HTTP)'}`;
+                content.append(account, domain);
+
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'history-delete';
+                deleteButton.dataset.index = String(index);
+                deleteButton.title = '删除此记录';
+                deleteButton.textContent = '×';
+                row.append(content, deleteButton);
+                historyDropdown.append(row);
+            });
+
+            const clearButton = document.createElement('div');
+            clearButton.className = 'clear-history';
+            clearButton.id = 'clearHistoryBtn';
+            clearButton.textContent = '清除所有历史记录';
+            historyDropdown.append(clearButton);
 
             // 为历史记录项添加点击事件
             historyDropdown.querySelectorAll('.history-content').forEach(content => {
                 content.addEventListener('click', function () {
-                    const item = this.parentNode;
-                    const domain = item.dataset.domain;
-                    const account = item.dataset.account;
-                    const password = item.dataset.password;
-                    const useHttps = item.dataset.useHttps === 'true';
+                    const index = Number(this.parentNode.dataset.index);
+                    const item = historyData[index];
+                    if (!item) return;
 
-                    domainInput.value = domain;
-                    usernameInput.value = account;
-                    passwordInput.value = password;
-                    document.getElementById('httpsSwitch').checked = useHttps;
+                    domainInput.value = item.domain;
+                    usernameInput.value = item.account;
+                    passwordInput.value = item.password;
+                    accessCodeInput.value = item.accessCode || '';
+                    document.getElementById('httpsSwitch').checked = item.useHttps === true;
 
                     // 关闭下拉框
                     historyDropdown.classList.remove('show');
@@ -1398,6 +1446,9 @@
             if (config && config.account) {
                 usernameInput.value = config.account;
             }
+            if (config && config.accessCode) {
+                accessCodeInput.value = config.accessCode;
+            }
             
             // 渲染历史记录
             renderHistoryList();
@@ -1453,9 +1504,9 @@
             if (e.target.classList.contains('github-link')) {
                 e.preventDefault(); // 阻止默认行为
                 const url = e.target.href;
-                // 使用Electron的shell模块在外部浏览器打开链接
-                const { shell } = require('electron');
-                shell.openExternal(url);
+                window.electronAPI.openExternal(url).catch((error) => {
+                    window.log.error('打开外部链接失败:', error);
+                });
             }
         });
 
@@ -1517,7 +1568,7 @@
         function initProxySettings() {
             // 获取当前代理设置
             ipcRenderer.send('get-download-proxy');
-            // 获取当前播放按钮配置
+            // 获取当前播放方式
             ipcRenderer.send('get-play-button-config');
         }
 
@@ -1539,11 +1590,9 @@
                 enabled: enabled,
                 proxyUrl: proxyUrl || 'https://ghfast.top'
             });
-            
-            // 保存播放按钮配置
-            ipcRenderer.send('set-play-button-config', {
-                hideOriginalPlayButton: hideOriginalPlayButton
-            });
+
+            // 保存播放方式
+            ipcRenderer.send('set-play-button-config', { hideOriginalPlayButton });
             
             // 显示保存状态
             const originalText = proxySaveBtn.textContent;
@@ -1578,10 +1627,10 @@
             }
         });
 
-        // 监听播放按钮配置响应
+        // 监听播放方式响应
         ipcRenderer.on('play-button-config-info', (event, data) => {
             if (data) {
-                hideOriginalPlayButtonSwitch.checked = data.hideOriginalPlayButton !== false; // 默认隐藏
+                hideOriginalPlayButtonSwitch.checked = data.hideOriginalPlayButton !== false;
             }
         });
 
@@ -1595,9 +1644,9 @@
 
         ipcRenderer.on('play-button-config-set', (event, data) => {
             if (data && data.success) {
-                window.log.info('播放按钮配置保存成功');
+                window.log.info('播放方式保存成功');
             } else {
-                window.log.error('播放按钮配置保存失败:', data.error);
+                window.log.error('播放方式保存失败:', data.error);
             }
         });
 

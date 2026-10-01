@@ -10,21 +10,12 @@ import { getMacCloseAction, setMacCloseAction, getTrayNotificationShown, setTray
 import * as fnConfig from '../modules/fn_config/config';
 import * as log from '../modules/logger';
 import { getMainWindow } from './common/mainwin';
-import { isTrusted } from '../modules/cert_trust';
+import { isTrusted, showCertificateTrustDialog } from '../modules/cert_trust';
 import { startProxyProcess, shutdownProxyProcess } from './common/proxy';
 
 // 禁用输入法自动切换
 app.commandLine.appendSwitch('--lang', 'en-US');
 app.commandLine.appendSwitch('--disable-features', 'VizDisplayCompositor');
-
-// 抑制SSL相关的底层错误日志
-app.commandLine.appendSwitch('--log-level', '3'); // 只显示致命错误
-app.commandLine.appendSwitch('--disable-logging');
-app.commandLine.appendSwitch('--silent');
-app.commandLine.appendSwitch('--no-sandbox'); // 有助于减少某些安全相关日志
-app.commandLine.appendSwitch('--disable-web-security'); // 禁用web安全检查（减少相关日志）
-app.commandLine.appendSwitch('--ignore-ssl-errors-spki-list'); // 忽略SSL SPKI列表错误
-app.commandLine.appendSwitch('--ignore-ssl-errors'); // 忽略SSL错误（减少相关日志）
 
 let mainWindow: BrowserWindow | null = null;
 let proxyProcess: ChildProcess | null = null;
@@ -62,8 +53,15 @@ if (!gotTheLock) {
                     callback(true); // 信任证书
                 } else {
                     log.warn(`证书验证错误: ${url}, 错误: ${error}`);
-                    // 不在信任列表中，使用默认处理（不信任）
-                    callback(false);
+                    // 对渲染窗口显式询问，避免 FN Connect 跳转到自签名 NAS 后静默白屏。
+                    event.preventDefault();
+                    const parentWindow = BrowserWindow.fromWebContents(webContents) || undefined;
+                    showCertificateTrustDialog(url, error, parentWindow)
+                        .then(callback)
+                        .catch((dialogError: unknown) => {
+                            log.error('处理证书信任确认失败:', dialogError);
+                            callback(false);
+                        });
                 }
             });
 

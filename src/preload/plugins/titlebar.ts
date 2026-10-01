@@ -8,6 +8,8 @@ function injectTitleBar(): void {
     logger.info('Injecting custom title bar...');
     if (document.getElementById('custom-titlebar')) return;
 
+    const isMac = process.platform === 'darwin';
+
     const bar = document.createElement('div');
     bar.id = 'custom-titlebar';
     bar.style.cssText = `
@@ -26,7 +28,9 @@ function injectTitleBar(): void {
         transition: background 0.3s ease;
     `;
 
-    bar.innerHTML = `
+    // macOS 的按钮由系统窗口绘制，这里只保留透明拖动区域。
+    // 其他平台继续使用原来的自定义窗口控制按钮。
+    bar.innerHTML = isMac ? '' : `
         <div id="titlebar-btns" style="-webkit-app-region:no-drag; display:flex; gap:2px; padding-right:4px;">
             <button id="min-btn" style="
                 background:transparent; 
@@ -84,6 +88,8 @@ function injectTitleBar(): void {
     // 防止出现双重滚动条
     document.documentElement.style.overflowY = 'hidden';
     document.body.appendChild(bar);
+
+    if (isMac) return;
 
     // 按钮交互效果
     const buttonIds: string[] = ['min-btn', 'max-btn', 'close-btn'];
