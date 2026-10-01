@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'node:path';
 import * as crypto from 'crypto';
 import { app, safeStorage } from 'electron';
+import * as log from '../logger';
 import { USER_DATA_PATH } from '../../public/constants';
 import { isMpvPlaybackEnabled } from './playbackPreference';
 
@@ -111,11 +112,19 @@ function getConfigPath(): string {
 }
 
 // 仅用于读取旧版本固定密钥加密的密码。
+// 旧版本（含 fork 早期版本）可能以明文存储过密码，非合法密文时按原值返回，交由调用方重新加密迁移。
 function decryptLegacyPassword(encrypted: string): string {
-    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), IV);
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
+    if (!/^[0-9a-fA-F]*$/.test(encrypted) || encrypted.length % 2 !== 0) {
+        return encrypted;
+    }
+    try {
+        const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), IV);
+        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch {
+        return encrypted;
+    }
 }
 
 function encryptCredential(value: string): string {
@@ -132,10 +141,15 @@ function encryptCredential(value: string): string {
 function decryptCredential(value: string, isLegacyPassword: boolean): { value: string; legacy: boolean } {
     if (!value) return { value: '', legacy: false };
     if (value.startsWith(SAFE_STORAGE_PREFIX)) {
-        return {
-            value: safeStorage.decryptString(Buffer.from(value.slice(SAFE_STORAGE_PREFIX.length), 'base64')),
-            legacy: false,
-        };
+        try {
+            return {
+                value: safeStorage.decryptString(Buffer.from(value.slice(SAFE_STORAGE_PREFIX.length), 'base64')),
+                legacy: false,
+            };
+        } catch (error) {
+            log.error('safeStorage 解密失败，按原值处理:', error);
+            return { value: '', legacy: false };
+        }
     }
     return {
         value: isLegacyPassword ? decryptLegacyPassword(value) : value,
